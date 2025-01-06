@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Map of Open Source Science (MOSS)"
+version: "1.0.0"
+authors:
+  - family-names: "Doe"
+    given-names: "John"
+    affiliation: "NumFOCUS"
+    orcid: ""
+date-released: "2025-01-01"
+url: "https://github.com/numfocus/MOSS"
+repository-code: "https://github.com/numfocus/MOSS"
+keywords:
+  - open source
+  - science
+  - visualization
+license: "MIT"
