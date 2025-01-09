@@ -1,17 +1,35 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "Map of Open Source Science (MOSS)"
-version: "1.0.0"
+version: "0.1.0"  
 authors:
-  - family-names: "Doe"
-    given-names: "John"
+  - family-names: "Smith"
+    given-names: "Alice"
     affiliation: "NumFOCUS"
-    orcid: ""
-date-released: "2025-01-01"
+    orcid: "https://orcid.org/0000-0002-1825-0097"
+  - family-names: "Jones"
+    given-names: "Bob"
+    affiliation: "Open Science Initiative"
+    orcid: "https://orcid.org/0000-0003-1419-2405"
 url: "https://github.com/numfocus/MOSS"
 repository-code: "https://github.com/numfocus/MOSS"
 keywords:
   - open source
   - science
   - visualization
-license: "MIT"
+license: "Apache-2.0"  
+references:
+  - title: "OpenAI GPT-4"
+    url: "https://openai.com/gpt-4"
+    type: "article"
+    authors:
+      - family-names: "OpenAI"
+        given-names: "GPT-4 Team"
+    year: 2023
+  - title: "Original Repository by eyermt"
+    url: "https://github.com/eyermt/repo-name"
+    type: "software"   # Use 'software' type
+    authors:
+      - family-names: "eyermt"
+        given-names: "eyermt"
+    year: 2023
