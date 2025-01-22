@@ -1,8 +1,8 @@
-# Pull Request Template ✨
+<!-- 🌟 Thank you for contributing! Together, we make this project better. -->
 
 ## 📋 Description  
 <!-- Provide a concise yet clear summary of what this PR changes or adds. -->  
-- What problem does it solve?  
+- What does this PR change within the project?  
 - Why is it necessary?  
 - Highlight any interesting or unique aspects of the change.  
 
@@ -10,7 +10,8 @@
 
 ## 🔗 Related Issue  
 <!-- Link the issue this PR addresses and include a brief explanation if needed. -->  
-Closes/Fixes: #
+<!-- Use keywords like "Closes #", "Fixes #", or "Resolves #" to automatically link and close the issue when this PR is merged. -->
+<!-- More details: https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/using-keywords-in-issues-and-pull-requests -->
 
 ---
 
@@ -29,7 +30,3 @@ Before submitting your PR, ensure the following:
 <!-- Add any additional context, insights, or areas for reviewers to focus on. -->  
 - Highlight complex parts or reasoning behind specific decisions.  
 - Suggest areas where feedback is especially welcome.  
-
----
-
-### 🌟 Thank you for contributing! Together, we make this project better.  
