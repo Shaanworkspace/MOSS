@@ -1,199 +1,438 @@
 import json
-import csv
-import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
-# Prompt for project URL(s)
-projectURL = input("Please enter the ecosyste.ms URL for your project of interest: ").split()
-#projectURL = ['https://papers.ecosyste.ms/api/v1/projects/pypi/scikit-learn']  #2431 mentions
-#projectURL = ['https://papers.ecosyste.ms/api/v1/projects/pypi/keras']         #141 mentions
-#projectURL = ['https://papers.ecosyste.ms/api/v1/projects/cran/OpenML']        #21 mentions
-projectMentionsYN = input("Would you like to create nodes for every project mentioned in papers that mention your project? y/n: ")
+import pandas as pd
+import requests
 
-# Declare global variables
-rowList = []
-institutionSet = set()
-peopleSet = set()
-paperSet = set()
-projectSet = set()
-sdgSet = set()
+# Display example URLs for user guidance
+print("""Example URLs: \n
+        https://papers.ecosyste.ms/api/v1/projects/pypi/scikit-learn \n
+        https://papers.ecosyste.ms/api/v1/projects/pypi/keras \n
+        https://papers.ecosyste.ms/api/v1/projects/cran/OpenML \n
+        https://papers.ecosyste.ms/api/v1/projects/cran/Imap  - 10 Mentions \n
+        https://papers.ecosyste.ms/api/v1/projects/cran/gjam  - 1 Mention \n
+        """)
 
-projectUrlSet = set()
-headers = {'accept': 'application/json'}
-myFieldnames = ['ID', 'Label', 'Name', 'ORCID', 'Persons Affiliated Institutions', 'DOI', 'Projects/Packages Cited', 'Authors', 'Homepage', 'repository_url', 'Sustainable Development Goals', 'sdg_score']
+# Prompt the user for project URL(s) and split the input into a list of URLs
+project_url = input(
+    'Please enter the ecosyste.ms URL for your project of interest: '
+).split()
 
-def processPaper(paperURL):
-    paperResponse = requests.get(paperURL, headers=headers)
+# Prompt the user to decide whether to include nodes for projects mentioned in related papers
+process_comentioned_projects_yn = input(
+    'Would you like to process every project co-mentioned in papers that mention your project? y/n: '
+)
+
+
+class SharedResources:
+    """
+    A thread-safe shared resource class for storing extracted data as Pandas DataFrames.
+    Ensures concurrency safety using a threading lock.
+    """
+
+    def __init__(self):
+        self.lock = Lock()
+        self.institution_df = pd.DataFrame(columns=['ID', 'Label', 'Name', 'ROR'])
+        self.people_df = pd.DataFrame(columns=['ID', 'Label', 'Name', 'ORCID'])
+        self.paper_df = pd.DataFrame(
+            columns=[
+                'ID',
+                'Label',
+                'Name',
+                'DOI',
+                'Authors',
+                'Projects Cited',
+                'Sustainable Development Goals',
+                'Concepts',
+                'Domains',
+                'Author Institutions',
+            ]
+        )
+        self.project_df = pd.DataFrame(
+            columns=['ID', 'Label', 'Name', 'Homepage', 'repository_url']
+        )
+        self.sdg_df = pd.DataFrame(columns=['ID', 'Label', 'Name'])
+        self.concept_df = pd.DataFrame(
+            columns=['ID', 'Label', 'Name', 'Wikidata', 'Concept_level']
+        )
+        self.domain_df = pd.DataFrame(columns=['ID', 'Label', 'Name', 'Is_major_topic'])
+        self.project_url_set = set()
+
+
+shared_resources = SharedResources()
+
+headers = {'accept': 'application/json'}  # Headers for HTTP requests
+
+
+# Function to process individual papers and extract relevant data
+def process_paper(paper_url):
+    """
+    Fetch and process paper metadata from a given URL.
+    Extracts and stores information on authors, institutions, SDGs, concepts, and domains.
+    """
     try:
-        paperDict = paperResponse.json()
+        paper_response = requests.get(paper_url, headers=headers, timeout=10)
+        paper_dict = paper_response.json()
 
-        paperAuthorNames = []
-        if paperDict["openalex_data"] is not None:
-            for authorship in paperDict["openalex_data"]["authorships"]:
-                paperAuthorNames.append(authorship['author']['display_name'])
+        if paper_dict['openalex_id'] not in shared_resources.paper_df['ID'].values:
+            if paper_dict['openalex_data']:
+                authors = parse_authors(paper_dict['openalex_data']['authorships'])
+                institutions = parse_institutions(
+                    paper_dict['openalex_data']['authorships']
+                )
+                sdgs = parse_sdgs(
+                    paper_dict['openalex_data']['sustainable_development_goals']
+                )
+                concepts = parse_concepts(paper_dict['openalex_data']['concepts'])
+                domains = parse_domains(paper_dict['openalex_data']['mesh'])
+                paper_mentions = process_paper_mentions(paper_dict['mentions_url'])
 
-        if projectMentionsYN == "y":
-            paperMentions = processPaperMentions(paperDict["mentions_url"])
-        else:
-            paperMentions = ""
+                this_paper = pd.DataFrame(
+                    [
+                        {
+                            'ID': paper_dict['openalex_id'],
+                            'Label': 'Paper',
+                            'Name': paper_dict['title'],
+                            'DOI': paper_dict['doi'],
+                            'Authors': ' | '.join(
+                                authorship['author'].get('display_name', 'Unknown')
+                                for authorship in paper_dict['openalex_data'][
+                                    'authorships'
+                                ]
+                            ),
+                            'Projects Cited': ' | '.join(paper_mentions),
+                            'Sustainable Development Goals': ' | '.join(
+                                sdg['display_name']
+                                for sdg in paper_dict['openalex_data'][
+                                    'sustainable_development_goals'
+                                ]
+                            ),
+                            'Concepts': ' | '.join(
+                                concept['display_name']
+                                for concept in paper_dict['openalex_data']['concepts']
+                            ),
+                            'Domains': ' | '.join(
+                                domain['descriptor_name']
+                                for domain in paper_dict['openalex_data']['mesh']
+                            ),
+                            'Author Institutions': ' | '.join(
+                                institution['display_name']
+                                for auth in paper_dict['openalex_data']['authorships']
+                                for institution in auth['institutions']
+                            ),
+                        }
+                    ]
+                )
 
-        if paperDict["openalex_id"] not in paperSet:
-            paperSet.add(paperDict["openalex_id"])
+                with shared_resources.lock:
+                    shared_resources.institution_df = pd.concat(
+                        [shared_resources.institution_df, institutions]
+                    ).drop_duplicates(subset=['ID'])
+                    shared_resources.people_df = pd.concat(
+                        [shared_resources.people_df, authors]
+                    ).drop_duplicates(subset=['ID'])
+                    shared_resources.paper_df = pd.concat(
+                        [shared_resources.paper_df, this_paper]
+                    ).drop_duplicates(subset=['ID'])
+                    shared_resources.sdg_df = pd.concat(
+                        [shared_resources.sdg_df, sdgs]
+                    ).drop_duplicates(subset=['ID'])
+                    shared_resources.concept_df = pd.concat(
+                        [shared_resources.concept_df, concepts]
+                    ).drop_duplicates(subset=['ID'])
+                    shared_resources.domain_df = pd.concat(
+                        [shared_resources.domain_df, domains]
+                    ).drop_duplicates(subset=['ID'])
 
-            if paperDict["openalex_data"] is not None:
-                for authorship in paperDict["openalex_data"]["authorships"]:
-                    thisAuthorInstitutions = []
-                    for institution in authorship["institutions"]:
-                        thisAuthorInstitutions.append(institution['display_name'])
-                        if institution["id"] not in institutionSet:
-                            institutionSet.add(institution["id"])
-                            rowList.append({'ID': institution['id'], 'Label': "Institution", 'Name': institution['display_name']})
-                thisPaperSDGs = []
-                for sdg in paperDict['openalex_data']['sustainable_development_goals']:
-                    thisPaperSDGs.append(sdg['display_name'])
-                    if sdg["id"] not in sdgSet:
-                        sdgSet.add(sdg["id"])
-                        rowList.append({'ID': sdg['id'], 'Label': "SDG", 'Name': sdg['display_name'], 'sdg_score': sdg['score']})
+    except requests.exceptions.RequestException as e:
+        print(f'Request failed for paper {paper_url}: {e}')
+    except json.decoder.JSONDecodeError as e:
+        print(f'JSON decode error for paper {paper_url}: {e}')
 
-            rowList.append({'ID': paperDict['openalex_id'], 'Label': "Paper", 'Name': paperDict['title'], 'DOI': paperDict['doi'], 'Authors': " | ".join(paperAuthorNames), 'Projects/Packages Cited': " | ".join(paperMentions), 'Sustainable Development Goals': " | ".join(thisPaperSDGs)})
-            authorDict = authorship["author"]
-            if authorDict['id'] not in peopleSet:
-                    peopleSet.add(authorDict['id'])
-                    rowList.append({'ID': authorDict['id'], 'Label': "Person", 'Name': authorDict['display_name'], 'ORCID': authorDict['orcid'], 'Persons Affiliated Institutions': " | ".join(thisAuthorInstitutions)})
-    except json.decoder.JSONDecodeError:
-        paperAuthorNames = [] #meaningless
 
-def processPaperMentions(paperMentionsURL):
-    paperMentionsResponse = requests.get(paperMentionsURL, headers=headers)
+def parse_authors(authorships):
+    """
+    Extracts author details from paper authorship metadata.
+    """
+    return pd.DataFrame(
+        [
+            {
+                'ID': authorship['author']['id'],
+                'Label': 'Person',
+                'Name': authorship['author']['display_name'],
+                'ORCID': authorship['author']['orcid'],
+            }
+            for authorship in authorships
+        ]
+    )
+
+
+def parse_institutions(authorships):
+    """
+    Extracts instution details from paper authorship metadata.
+    """
+    return pd.DataFrame(
+        [
+            {
+                'ID': inst['id'],
+                'Label': 'Institution',
+                'Name': inst['display_name'],
+                'ROR': inst['ror'],
+            }
+            for auth in authorships
+            for inst in auth['institutions']
+        ]
+    )
+
+
+def parse_sdgs(sdgs_list):
+    """
+    Extracts sdg details from paper metadata.
+    """
+    return pd.DataFrame(
+        [
+            {
+                'ID': sdg['id'],
+                'Label': 'SDG',
+                'Name': sdg['display_name'],
+            }
+            for sdg in sdgs_list
+        ]
+    )
+
+
+def parse_concepts(concepts_list):
+    """
+    Extracts concept details from paper metadata.
+    """
+    return pd.DataFrame(
+        [
+            {
+                'ID': concept['id'],
+                'Label': 'Concept',
+                'Name': concept['display_name'],
+                'Wikidata': concept['wikidata'],
+                'Concept_level': concept['level'],
+            }
+            for concept in concepts_list
+        ]
+    )
+
+
+def parse_domains(domains_list):
+    """
+    Extracts domain details from paper metadata.
+    """
+    return pd.DataFrame(
+        [
+            {
+                'ID': domain['descriptor_ui'],
+                'Label': 'Domain',
+                'Name': domain['descriptor_name'],
+                'Is_major_topic': domain['is_major_topic'],
+            }
+            for domain in domains_list
+        ]
+    )
+
+
+def process_paper_mentions(paper_mentions_url):
+    """
+    Fetches and extracts the names of projects mentioned in a paper, also collectiong their URLs for later recursion.
+    """
+    paper_mentions = []
     try:
-        paperMentionsDict = paperMentionsResponse.json()
-
-        paperMentionsList = []
-        for paperMention in paperMentionsDict:
-            paperMentionsList.append(paperMention["project_url"])
-            projectUrlSet.add(paperMention["project_url"])
-
-        thisPapersMentions = []
-        for projectURL in paperMentionsList:
-            projectResponse = requests.get(projectURL, headers=headers)
+        paper_mentions_response = requests.get(
+            paper_mentions_url, headers=headers, timeout=10
+        )
+        paper_mentions_dict = paper_mentions_response.json()
+        paper_mentions_list = [
+            paper_mention['project_url'] for paper_mention in paper_mentions_dict
+        ]
+        with shared_resources.lock:
+            shared_resources.project_url_set.update(paper_mentions_list)
+        for project_url in paper_mentions_list:
             try:
-                projDict = projectResponse.json()
+                project_response = requests.get(
+                    project_url, headers=headers, timeout=10
+                )
+                proj_dict = project_response.json()
+                if 'ecosystem' in proj_dict:
+                    paper_mentions.append(
+                        f"{proj_dict['ecosystem']}:{proj_dict['name']}"
+                    )
+            except requests.exceptions.RequestException as e:
+                print(f'Request failed for project {project_url}: {e}')
+            except json.decoder.JSONDecodeError as e:
+                print(f'JSON decode error for project {project_url}: {e}')
+    except requests.exceptions.RequestException as e:
+        print(f'Request failed for mentions {paper_mentions_url}: {e}')
+    except json.decoder.JSONDecodeError as e:
+        print(f'JSON decode error for mentions {paper_mentions_url}: {e}')
+    return paper_mentions
 
-                thisPapersMentions.append(projDict["ecosystem"] + ":" + projDict["name"])
 
-                if projDict["package"] is not None:
-                    home = projDict["package"]["homepage"]
-                    repo = projDict["package"]["repository_url"]
-                else:
-                    home = ""
-                    repo = ""
-
-                if projDict["czi_id"] not in projectSet:
-                    projectSet.add(projDict["czi_id"])
-                    rowList.append({'ID': projDict["czi_id"], 'Label': "Project", 'Name': projDict["ecosystem"] + ":" + projDict["name"], 'Homepage': home, 'repository_url': repo})
-            except json.decoder.JSONDecodeError:
-                thisPapersMentions = []
-    except json.decoder.JSONDecodeError:
-        thisPapersMentions = []
-
-    return thisPapersMentions
-
-def processProjects(projectURLs):
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(processProject, projectU) for projectU in projectURLs]
+def process_projects(project_urls):
+    """
+    Processes multiple project URLs concurrently using a thread pool.
+    """
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [
+            executor.submit(process_project, project_u) for project_u in project_urls
+        ]
         for future in as_completed(futures):
             future.result()
 
-def processProject(projectU):
-    response = requests.get(projectU, headers=headers)
+
+def process_project(project_u):
+    """
+    Fetch and process project metadata from a given URL.
+    Extracts and stores information on a single project, collects a list of paper urls, and initiates process_paper for each.
+    """
     try:
-        projectDict = response.json()
-
-        if projectDict["package"] is not None:
-            home = projectDict["package"]["homepage"]
-            repo = projectDict["package"]["repository_url"]
+        response = requests.get(project_u, headers=headers, timeout=10)
+        project_dict = response.json()
+        if project_dict['package']:
+            home = project_dict['package']['homepage']
+            repo = project_dict['package']['repository_url']
         else:
-            home = ""
-            repo = ""
+            home = ''
+            repo = ''
 
-        projectSet.add(projectDict["czi_id"])
-        rowList.append({'ID': projectDict["czi_id"], 'Label': "Project", 'Name': projectDict["ecosystem"] + ":" + projectDict["name"], 'Homepage': home, 'repository_url': repo})
+        this_project = pd.DataFrame(
+            [
+                {
+                    'ID': project_dict['czi_id'],
+                    'Label': 'Project',
+                    'Name': f"{project_dict['ecosystem']}:{project_dict['name']}",
+                    'Homepage': home,
+                    'repository_url': repo,
+                }
+            ]
+        )
 
-        projectMentionsURL = projectDict["mentions_url"] + "?page=1&per_page=1000"
+        with shared_resources.lock:
+            shared_resources.project_df = pd.concat(
+                [shared_resources.project_df, this_project]
+            ).drop_duplicates(subset=['ID'])
 
-        mentionsResponse = requests.get(projectMentionsURL, headers=headers)
-        mentionsDict = mentionsResponse.json()
-
-        print("Querying: " + projectU)
-        print("There are " + mentionsResponse.headers['total-pages'] + " pages of mentions to fetch.")
-        print("For a total of: " + mentionsResponse.headers['total-count'] + " papers")
-
-        paperURLsList = []
-        totalPages = int(mentionsResponse.headers['total-pages'])
-        pageNum = 1
-        while pageNum <= totalPages:
-            projectMentionsURL = projectDict["mentions_url"] + "?page=" + str(pageNum) + "&per_page=1000"
-            mentionsDict = requests.get(projectMentionsURL, headers=headers).json()
-
-            for mention in mentionsDict:
-                paperURLsList.append(mention["paper_url"])
-            pageNum += 1
+        project_mentions_url = f"{project_dict['mentions_url']}?page=1&per_page=1000"
+        mentions_response = requests.get(
+            project_mentions_url, headers=headers, timeout=10
+        )
+        mentions_dict = mentions_response.json()
+        print(f'Querying: {project_u}')
+        print(
+            f"There are {mentions_response.headers['total-pages']} pages of mentions to fetch."
+        )
+        print(f"For a total of: {mentions_response.headers['total-count']} papers")
+        paper_urls_list = []
+        total_pages = int(mentions_response.headers['total-pages'])
+        for page_num in range(1, total_pages + 1):
+            project_mentions_url = (
+                f"{project_dict['mentions_url']}?page={page_num}&per_page=1000"
+            )
+            mentions_dict = requests.get(
+                project_mentions_url, headers=headers, timeout=10
+            ).json()
+            paper_urls_list.extend([mention['paper_url'] for mention in mentions_dict])
 
         with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [executor.submit(processPaper, paperURL) for paperURL in paperURLsList]
-            paperCounter = 0
+            futures = [
+                executor.submit(process_paper, paper_url)
+                for paper_url in paper_urls_list
+            ]
             for future in as_completed(futures):
                 future.result()
-                paperCounter += 1
-                print("Processed paper: " + str(paperCounter) + " of " + mentionsResponse.headers['total-count'])
 
-        with open('ecosystms_output.csv', mode='a', newline='') as file:
-            writer = csv.DictWriter(file, fieldnames=myFieldnames)
-            for row in rowList:
-                writer.writerow(row)
-        rowList.clear()
-        print("All rows appended to CSV file successfully!")
-    except json.decoder.JSONDecodeError:
-        rowList.clear()
+    except requests.exceptions.RequestException as e:
+        print(f'Request failed for project {project_u}: {e}')
+    except json.decoder.JSONDecodeError as e:
+        print(f'JSON decode error for project {project_u}: {e}')
 
 
-def checkScope():
-    print("This project has " + str(len(projectUrlSet)) + " co-mentioned projects")
+def write_to_csv():
+    """
+    Writes all collected data to CSV files.
+    """
+    with shared_resources.lock:
+        shared_resources.institution_df.to_csv(
+            'ecosystms_output_institutions.csv', index=False
+        )
+        shared_resources.people_df.to_csv('ecosystms_output_people.csv', index=False)
+        shared_resources.paper_df.to_csv('ecosystms_output_papers.csv', index=False)
+        shared_resources.project_df.to_csv('ecosystms_output_projects.csv', index=False)
+        shared_resources.sdg_df.to_csv('ecosystms_output_sdgs.csv', index=False)
+        shared_resources.concept_df.to_csv('ecosystms_output_concepts.csv', index=False)
+        shared_resources.domain_df.to_csv('ecosystms_output_domains.csv', index=False)
 
-    mentionsCounts = []
+        shared_resources.institution_df.to_csv(
+            'ecosystms_output_full.csv', index=False, mode='w'
+        )
+        shared_resources.people_df.to_csv(
+            'ecosystms_output_full.csv', index=False, mode='a'
+        )
+        shared_resources.paper_df.to_csv(
+            'ecosystms_output_full.csv', index=False, mode='a'
+        )
+        shared_resources.project_df.to_csv(
+            'ecosystms_output_full.csv', index=False, mode='a'
+        )
+        shared_resources.sdg_df.to_csv(
+            'ecosystms_output_full.csv', index=False, mode='a'
+        )
+        shared_resources.concept_df.to_csv(
+            'ecosystms_output_full.csv', index=False, mode='a'
+        )
+        shared_resources.domain_df.to_csv(
+            'ecosystms_output_full.csv', index=False, mode='a'
+        )
 
-    try:
-        for projectU in projectUrlSet:
-            response = requests.get(projectU, headers=headers)
-            thisProjectDict = response.json()
 
-            thisProjectMentionsURL = thisProjectDict["mentions_url"] + "?page=1&per_page=1"
+def write_to_parquet():
+    """
+    Writes all collected data to Parquet files for more efficient storage and retrieval.
+    """
+    with shared_resources.lock:
+        shared_resources.institution_df.to_parquet(
+            'institution.parquet', engine='pyarrow', index=False
+        )
+        shared_resources.people_df.to_parquet(
+            'person.parquet', engine='pyarrow', index=False
+        )
+        shared_resources.paper_df.to_parquet(
+            'paper.parquet', engine='pyarrow', index=False
+        )
+        shared_resources.project_df.to_parquet(
+            'project.parquet', engine='pyarrow', index=False
+        )
+        shared_resources.sdg_df.to_parquet('sdg.parquet', engine='pyarrow', index=False)
+        shared_resources.concept_df.to_parquet(
+            'concept.parquet', engine='pyarrow', index=False
+        )
+        shared_resources.domain_df.to_parquet(
+            'domain.parquet', engine='pyarrow', index=False
+        )
 
-            mentionsResponse = requests.get(thisProjectMentionsURL, headers=headers)
-            mentionsDict = mentionsResponse.json()
 
-            mentionsCounts.append(int(mentionsResponse.headers['total-count']))
-            mentionsAverage = sum(mentionsCounts) / len(mentionsCounts)
+# Main execution starts here
 
-        print("With an average of: " + str(mentionsAverage) + " mentions per project")
-    except json.decoder.JSONDecodeError:
-        mentionsCounts = [0]
-    return(sum(mentionsCounts))
+# Start processing the projects
+process_projects(project_url)
 
+# If the user opts to process co-mentioned projects, do so
+if process_comentioned_projects_yn == 'y':
+    project_url_set_copy = shared_resources.project_url_set.copy()
+    process_projects(project_url_set_copy)
 
+# Display the total number of co-mentioned projects found
+print(f'This project had {len(shared_resources.project_url_set)} co-mentioned projects')
 
-# Main
-with open('ecosystms_output.csv', mode='w', newline='') as file:
-    writer = csv.DictWriter(file, fieldnames=myFieldnames)
-    writer.writeheader()
+# Write the gathered data to CSV files
+write_to_csv()
+print('All rows appended to CSV files successfully!')
 
-processProjects(projectURL)
-
-papersEstimate = checkScope()
-
-continueYN = input("Would you like to continue processing " + str(papersEstimate) + " more papers? y/n: ")
-
-if continueYN == 'y':
-    projUrlSetCopy = projectUrlSet.copy()
-    processProjects(projUrlSetCopy)
-
+# Write the gathered data to Parquet files for more efficient storage
+write_to_parquet()
+print('All data exported to Parquet file successfully!')
