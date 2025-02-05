@@ -12,17 +12,16 @@ keywords:
   - visualization
 license: "Apache-2.0"  
 references:
-  - title: "OpenAI GPT-4"
-    url: "https://openai.com/gpt-4"
-    type: "article"
+  - title: "OpenAI ChatGPT"
+    url: "https://openai.com/chatgpt"
+    type: "software"
     authors:
-      - family-names: "OpenAI"
-        given-names: "GPT-4 Team"
-    year: 2023
-  - title: "Original Repository by eyermt"
-    url: "https://github.com/eyermt/repo-name"
-    type: "software"   # Use 'software' type
+      - name: "OpenAI ChatGPT Team"
+    year: 2024
+  - title: "Original MOSS repository by Mark Eyer"
+    url: "https://github.com/eyermt/moss"
+    type: "software"
     authors:
-      - family-names: "eyermt"
-        given-names: "eyermt"
-    year: 2023
+      - family-names: "Eyer"
+        given-names: "Mark"
+    year: 2024
